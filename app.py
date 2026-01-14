@@ -38,7 +38,7 @@ to ensure reproducibility.
 
 import io
 import datetime
-from typing import Optional, Dict, List, Any
+from typing import Optional, Dict, List, Any, Tuple
 
 import numpy as np
 import pandas as pd
@@ -58,25 +58,31 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 def detect_datetime_column(df: pd.DataFrame) -> Optional[str]:
     """Attempt to find a column containing datetime information.
 
-    This function looks for columns whose names include keywords such
-    as 'date', 'time' or 'timestamp'. It then tries to convert the
-    column to datetimes and selects the first column where at least
-    half of the values convert successfully.
+    In addition to checking for common substrings in the column name
+    (e.g. "date", "time", "timestamp"), this function will try to
+    convert **every** column to datetimes and select the first column
+    where more than half of the values convert successfully. This
+    allows detection of date columns even if they do not contain a
+    descriptive name.
 
     Args:
         df: DataFrame to search.
 
     Returns:
-        Name of the detected datetime column or ``None``.
+        Name of the detected datetime column or ``None`` if none is
+        identified.
     """
-    candidates = [c for c in df.columns if any(k in c.lower() for k in ["date", "time", "timestamp"])]
+    # Prioritise columns that contain typical datetime keywords
+    candidates = [c for c in df.columns if any(k in str(c).lower() for k in ["date", "time", "timestamp"])]
     for col in candidates + list(df.columns):
+        # Skip columns with non-string convertible values entirely
         try:
             conv = pd.to_datetime(df[col], errors="coerce")
-            if conv.notna().sum() >= len(df) / 2:
-                return col
         except Exception:
             continue
+        # At least half of the values must be parsed successfully
+        if conv.notna().sum() >= len(df) / 2:
+            return col
     return None
 
 
@@ -99,31 +105,36 @@ def describe_dataframe(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def data_quality_checks(df: pd.DataFrame) -> Dict[str, Any]:
-    """Perform basic data quality checks on the DataFrame.
+    """Perform expanded data quality checks on the DataFrame.
 
-    Checks performed include:
-    - Missing values per column
-    - Number of duplicate rows
-    - Negative values in numeric columns
-    - Outliers beyond 3 standard deviations in numeric columns
+    In addition to the basic checks (missing values, duplicate rows,
+    negative values in numeric columns and z-score outliers), this
+    function also identifies columns with a single unique value (i.e.
+    constants) and categorical columns with extremely high cardinality
+    (where nearly every value is unique). These additional checks help
+    to flag uninformative features and potential join keys that may
+    need special handling.
 
     Args:
         df: DataFrame to assess.
 
     Returns:
-        Dictionary with keys 'missing', 'duplicates', 'negatives',
-        'outliers' containing counts per column or overall counts.
+        Dictionary mapping check names to counts or per-column
+        dictionaries. Keys may include 'missing', 'duplicates',
+        'negatives', 'outliers', 'constants' and 'high_cardinality'.
     """
-    quality = {}
-    # Missing values
+    quality: Dict[str, Any] = {}
+    # Missing values per column
     missing = df.isna().sum()
-    quality['missing'] = missing[missing > 0].to_dict()
-    # Duplicate rows
+    missing_filtered = missing[missing > 0].to_dict()
+    if missing_filtered:
+        quality['missing'] = missing_filtered
+    # Duplicate rows across the entire DataFrame
     dup_count = int(df.duplicated().sum())
     if dup_count > 0:
         quality['duplicates'] = dup_count
     # Negative values in numeric columns
-    negatives = {}
+    negatives: Dict[str, int] = {}
     for col in df.select_dtypes(include=[np.number]).columns:
         neg_count = int((df[col] < 0).sum())
         if neg_count > 0:
@@ -131,34 +142,83 @@ def data_quality_checks(df: pd.DataFrame) -> Dict[str, Any]:
     if negatives:
         quality['negatives'] = negatives
     # Outliers using z-score method (only if more than 10 values)
-    outliers = {}
+    outliers: Dict[str, int] = {}
     for col in df.select_dtypes(include=[np.number]).columns:
         series = df[col].dropna().astype(float)
         if len(series) < 10:
             continue
-        zscores = (series - series.mean()) / series.std(ddof=0)
+        std = series.std(ddof=0)
+        if std == 0:
+            continue
+        zscores = (series - series.mean()) / std
         out_count = int((abs(zscores) > 3).sum())
         if out_count > 0:
             outliers[col] = out_count
     if outliers:
         quality['outliers'] = outliers
+    # Constant columns (all values identical)
+    constants = {col: df[col].iloc[0] for col in df.columns if df[col].nunique(dropna=False) == 1}
+    if constants:
+        quality['constants'] = constants
+    # High cardinality categorical columns (unique values / rows > 0.7)
+    high_card = {}
+    for col in df.columns:
+        # Only consider non-numeric columns for cardinality check
+        if pd.api.types.is_numeric_dtype(df[col]):
+            continue
+        # Unique values as proportion of total rows
+        uniq = df[col].nunique(dropna=True)
+        if len(df) > 0 and uniq / len(df) > 0.7:
+            high_card[col] = uniq
+    if high_card:
+        quality['high_cardinality'] = high_card
     return quality
 
 
 def quality_messages(quality: Dict[str, Any]) -> List[str]:
-    """Convert quality check results into human‑readable messages."""
-    messages = []
+    """Convert data quality check results into human‑readable messages.
+
+    This helper function traverses the dictionary produced by
+    ``data_quality_checks`` and composes explanatory sentences for
+    each issue identified. Only checks present in the dictionary will
+    generate messages.
+
+    Args:
+        quality: Dictionary of quality issues and their counts.
+
+    Returns:
+        A list of human‑readable strings describing each issue.
+    """
+    messages: List[str] = []
+    # Missing values
     if 'missing' in quality:
         for col, count in quality['missing'].items():
-            messages.append(f"Column '{col}' contains {count} missing value{'s' if count > 1 else ''}. Consider imputing or removing them.")
+            msg = f"Column '{col}' contains {count} missing value{'s' if count != 1 else ''}. Consider imputing or removing them."
+            messages.append(msg)
+    # Duplicates
     if 'duplicates' in quality:
-        messages.append(f"The dataset contains {quality['duplicates']} duplicate row{'s' if quality['duplicates'] != 1 else ''}. Consider dropping duplicates.")
+        count = quality['duplicates']
+        messages.append(f"The dataset contains {count} duplicate row{'s' if count != 1 else ''}. Consider removing duplicates to ensure accurate analyses.")
+    # Negative values
     if 'negatives' in quality:
         for col, count in quality['negatives'].items():
-            messages.append(f"Column '{col}' has {count} negative value{'s' if count > 1 else ''}. If negative values are unexpected for this field, verify the data.")
+            msg = f"Column '{col}' has {count} negative value{'s' if count != 1 else ''}. If negative values are unexpected for this field, verify the data."
+            messages.append(msg)
+    # Outliers
     if 'outliers' in quality:
         for col, count in quality['outliers'].items():
-            messages.append(f"Column '{col}' contains {count} outlier{'s' if count > 1 else ''} beyond ±3 standard deviations. Investigate these anomalies.")
+            msg = f"Column '{col}' contains {count} outlier{'s' if count != 1 else ''} beyond ±3 standard deviations. Investigate these anomalies."
+            messages.append(msg)
+    # Constant columns
+    if 'constants' in quality:
+        for col, value in quality['constants'].items():
+            msg = f"Column '{col}' has a single unique value ('{value}'), which may not be informative. Consider dropping this column."
+            messages.append(msg)
+    # High cardinality
+    if 'high_cardinality' in quality:
+        for col, uniq in quality['high_cardinality'].items():
+            msg = f"Column '{col}' has a very high number of unique values ({uniq}). It may represent an identifier or require encoding for modelling."
+            messages.append(msg)
     if not messages:
         messages.append("No obvious data quality issues were detected.")
     return messages
@@ -215,6 +275,101 @@ def compute_trends(df: pd.DataFrame, time_col: Optional[str]) -> List[Dict[str, 
     return results
 
 
+def compute_correlations(df: pd.DataFrame) -> Optional[Dict[str, Any]]:
+    """Compute pairwise correlations among numeric columns and identify strong relationships.
+
+    For datasets with at least two numeric columns, a correlation matrix is
+    calculated. Pairs with an absolute correlation coefficient above
+    0.8 are considered "strong" and returned separately.
+
+    Args:
+        df: Input DataFrame.
+
+    Returns:
+        A dictionary with keys 'matrix' (DataFrame) and 'strong_pairs'
+        (list of tuples) or ``None`` if fewer than two numeric columns
+        are present.
+    """
+    numeric_df = df.select_dtypes(include=[np.number])
+    if numeric_df.shape[1] < 2:
+        return None
+    corr_matrix = numeric_df.corr().fillna(0.0)
+    strong_pairs: List[Tuple[str, str, float]] = []
+    cols = corr_matrix.columns
+    for i, c1 in enumerate(cols):
+        for c2 in cols[i+1:]:
+            val = float(corr_matrix.loc[c1, c2])
+            if abs(val) >= 0.8:
+                strong_pairs.append((c1, c2, val))
+    return {"matrix": corr_matrix, "strong_pairs": strong_pairs}
+
+
+def generate_correlation_heatmap(corr_matrix: pd.DataFrame) -> str:
+    """Generate an interactive Plotly heatmap for a correlation matrix."""
+    import plotly.express as px
+    # Use a diverging colour scale and fix the z-range to [-1, 1]
+    fig = px.imshow(
+        corr_matrix,
+        text_auto=".2f",
+        color_continuous_scale="RdBu",
+        zmin=-1.0,
+        zmax=1.0,
+        aspect="auto",
+    )
+    fig.update_layout(title="Correlation heatmap", height=400, margin=dict(l=30, r=30, t=50, b=30))
+    return fig.to_html(full_html=False, include_plotlyjs='cdn')
+
+
+def generate_category_charts(df: pd.DataFrame) -> List[str]:
+    """Generate bar charts for categorical columns with low cardinality.
+
+    For each non-numeric column with between 2 and 10 unique values,
+    this function groups the data by that column and computes the sum
+    of each numeric column. A bar chart is created for the first
+    numeric column encountered per category. Only a limited number of
+    charts (max 6) are produced to avoid overwhelming the user.
+
+    Args:
+        df: Input DataFrame.
+
+    Returns:
+        A list of Plotly chart HTML strings.
+    """
+    charts: List[str] = []
+    import plotly.express as px
+    numeric_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+    cat_cols = [c for c in df.columns if not pd.api.types.is_numeric_dtype(df[c])]
+    # Limit total charts to six to maintain readability
+    chart_limit = 6
+    for cat_col in cat_cols:
+        uniq_count = df[cat_col].nunique(dropna=True)
+        if uniq_count < 2 or uniq_count > 10:
+            continue
+        # Choose the first numeric column to summarise
+        for num_col in numeric_cols:
+            # Compute group sum and sort
+            try:
+                agg = df.groupby(cat_col)[num_col].sum().sort_values(ascending=False)
+                # Skip if there are too many categories to meaningfully display
+                if agg.empty:
+                    continue
+            except Exception:
+                continue
+            fig = px.bar(
+                x=agg.index.astype(str),
+                y=agg.values,
+                labels={'x': cat_col, 'y': f"Sum of {num_col}"},
+                title=f"Sum of {num_col} by {cat_col}"
+            )
+            fig.update_layout(height=400, margin=dict(l=30, r=30, t=50, b=30))
+            charts.append(fig.to_html(full_html=False, include_plotlyjs='cdn'))
+            # Break after first numeric col for this cat col
+            break
+        if len(charts) >= chart_limit:
+            break
+    return charts
+
+
 def forecast_next(df: pd.DataFrame, time_col: str, target_col: str, periods: int = 3) -> Optional[List[float]]:
     """Forecast future values using a simple ARIMA(1,1,0) model.
 
@@ -257,27 +412,39 @@ def generate_plots(df: pd.DataFrame, time_col: Optional[str]) -> List[str]:
 
 
 def build_narrative(quality_msgs: List[str], trends: List[Dict[str, Any]], forecasts: Dict[str, List[float]]) -> str:
-    """Assemble a narrative summary from quality issues, trends and forecasts."""
-    parts = []
-    # Quality issues
+    """Assemble a narrative summary from quality issues, trends and forecasts.
+
+    The narrative provides a structured description of the key
+    observations in the dataset. It combines data quality warnings,
+    notable trends (based on the most extreme slopes) and concise
+    forecasts for each numeric column. Additional narrative elements
+    such as correlations or category insights can be appended by the
+    caller if desired.
+
+    Args:
+        quality_msgs: List of messages returned from quality checks.
+        trends: List of trend dictionaries produced by ``compute_trends``.
+        forecasts: Mapping of column names to forecast arrays.
+
+    Returns:
+        A multi‑line string summarising the findings.
+    """
+    parts: List[str] = []
+    # Data quality section
     if quality_msgs:
         parts.append("Data quality summary:")
         parts.extend(quality_msgs)
-    # Trends: pick up to 3 most extreme slopes to mention
+    # Trends section (select up to 3 most extreme trends by absolute slope)
     if trends:
-        # sort by absolute slope magnitude
         sorted_trends = sorted(trends, key=lambda t: abs(t['slope']), reverse=True)[:3]
-        trend_sentences = [f"{t['comment']}" for t in sorted_trends]
         parts.append("Trend highlights:")
-        parts.extend(trend_sentences)
-    # Forecasts summary
+        parts.extend([t['comment'] for t in sorted_trends])
+    # Forecasts section
     if forecasts:
-        forecast_msgs = []
+        parts.append("Forecasts:")
         for col, fc in forecasts.items():
             forecast_str = ", ".join(f"{v:.2f}" for v in fc)
-            forecast_msgs.append(f"Forecast for '{col}' over the next {len(fc)} periods: {forecast_str}")
-        parts.append("Forecasts:")
-        parts.extend(forecast_msgs)
+            parts.append(f"Forecast for '{col}' over the next {len(fc)} periods: {forecast_str}")
     if not parts:
         return "No notable insights found."
     return "\n".join(parts)
@@ -313,17 +480,36 @@ async def upload(request: Request, file: UploadFile):
     quality_msgs = quality_messages(quality)
     # Trend analysis
     trends = compute_trends(df, time_col)
-    # Forecasts
+    # Forecasts for numeric columns if a datetime column was detected
     fc_results: Dict[str, List[float]] = {}
     if time_col:
         for col in df.select_dtypes(include=[np.number]).columns:
             fc = forecast_next(df, time_col, col)
             if fc:
                 fc_results[col] = fc
+    # Correlation analysis (matrix and strong pairs)
+    corr_info = compute_correlations(df)
+    corr_heatmap = None
+    correlation_messages: List[str] = []
+    if corr_info:
+        corr_heatmap = generate_correlation_heatmap(corr_info["matrix"])
+        # Build messages for strongly correlated pairs
+        for a, b, val in corr_info["strong_pairs"]:
+            relation = "positively" if val > 0 else "negatively"
+            correlation_messages.append(f"Columns '{a}' and '{b}' are highly {relation} correlated (corr = {val:.2f}).")
+    # Category summary charts
+    category_plots = generate_category_charts(df)
     # Narrative summary
     narrative = build_narrative(quality_msgs, trends, fc_results)
-    # Charts
-    plots = generate_plots(df, time_col)
+    # Append correlation messages to the narrative (optional)
+    if correlation_messages:
+        narrative += "\n\nCorrelation insights:\n" + "\n".join(correlation_messages)
+    # Build interactive charts: general numeric plots, correlation heatmap, category plots
+    charts = []
+    charts.extend(generate_plots(df, time_col))
+    if corr_heatmap:
+        charts.append(corr_heatmap)
+    charts.extend(category_plots)
     return templates.TemplateResponse(
         "result.html",
         {
@@ -333,6 +519,7 @@ async def upload(request: Request, file: UploadFile):
             "trends": trends,
             "forecasts": fc_results,
             "narrative": narrative,
-            "plots": plots,
+            "correlation_messages": correlation_messages,
+            "plots": charts,
         },
     )
