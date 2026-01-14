@@ -177,8 +177,26 @@ def compute_correlations(df: pd.DataFrame) -> Optional[Dict[str, Any]]:
 
 
 def forecast_next(df: pd.DataFrame, time_col: str, target_col: str, periods: int = 3) -> Optional[List[float]]:
-    """""Forecast future values using a simple linear regression trend."""ple linear regression trend."""
-  
+    """
+    Produce a simple linear trend forecast for the target column.
+
+    This function fits a first-degree polynomial (line) to the observed values
+    against their occurrence order and extrapolates into the future for the
+    requested number of periods. It provides a lightweight alternative to
+    ARIMA models that does not require compiling any external libraries.
+
+    Args:
+        df: The full DataFrame containing the data.
+        time_col: Name of the column representing time or ordering. It is
+            ignored for forecasting; ordering is determined by the row
+            sequence after sorting by this column.
+        target_col: Name of the numeric column to forecast.
+        periods: Number of future periods to forecast.
+
+    Returns:
+        List of forecasted values, or ``None`` if not enough data.
+    """
+      
       try:
         series = df[[time_col, target_col]].dropna().sort_values(time_col)
         y = series[target_col].astype(float).values
