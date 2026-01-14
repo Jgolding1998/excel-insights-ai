@@ -462,45 +462,69 @@ async def upload(request: Request, file: UploadFile):
     contents = await file.read()
     # Read file into DataFrame; attempt Excel with intelligent sheet selection then fallback to CSV
     df = None  # type: ignore[assignment]
-    # Try Excel formats first
+    # Determine file extension to guide parsing
+    import os
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    # Try Excel formats first if extension indicates an Excel workbook
     try:
-        # Use ExcelFile to inspect all sheets and choose the most informative one.
-        xls = pd.ExcelFile(io.BytesIO(contents))
-        best_sheet = None
-        best_score = -1
-        # Evaluate each sheet: prefer sheets with many numeric columns and rows.
-        for sheet_name in xls.sheet_names:
+        xls = None
+        # Only attempt to parse as Excel for typical Excel extensions
+        if ext.endswith((".xlsx", ".xlsm", ".xlsb", ".xls", ".ods")):
             try:
-                tmp = xls.parse(sheet_name)
+                # Explicitly specify openpyxl engine for xlsx reading. If this fails, fall back.
+                xls = pd.ExcelFile(io.BytesIO(contents), engine="openpyxl")
             except Exception:
-                continue
-            # Score based on number of numeric columns and total rows
-            num_numeric = tmp.select_dtypes(include=[np.number]).shape[1]
-            n_rows = tmp.shape[0]
-            score = num_numeric * n_rows
-            # Skip sheets with no numeric columns
-            if num_numeric > 0 and score > best_score:
-                best_score = score
-                best_sheet = sheet_name
-        # Fall back to first sheet if none scored
-        if best_sheet is None:
-            best_sheet = xls.sheet_names[0] if xls.sheet_names else None
-        if best_sheet is not None:
-            df = xls.parse(best_sheet)
+                try:
+                    xls = pd.ExcelFile(io.BytesIO(contents))
+                except Exception:
+                    xls = None
+        if xls is not None:
+            best_sheet = None
+            best_score = -1
+            # Evaluate each sheet: prefer sheets with many numeric columns and rows.
+            for sheet_name in xls.sheet_names:
+                try:
+                    tmp = xls.parse(sheet_name)
+                except Exception:
+                    continue
+                # Score based on number of numeric columns and total rows
+                num_numeric = tmp.select_dtypes(include=[np.number]).shape[1]
+                n_rows = tmp.shape[0]
+                score = num_numeric * n_rows
+                # Skip sheets with no numeric columns
+                if num_numeric > 0 and score > best_score:
+                    best_score = score
+                    best_sheet = sheet_name
+            # Fall back to first sheet if none scored
+            if best_sheet is None:
+                best_sheet = xls.sheet_names[0] if xls.sheet_names else None
+            if best_sheet is not None:
+                df = xls.parse(best_sheet)
     except Exception:
         df = None
-    # Fallback to generic Excel read if above fails
+    # Fallback to generic Excel read if above fails and file appears to be Excel
+    if df is None:
+        if ext.endswith((".xlsx", ".xlsm", ".xlsb", ".xls", ".ods")):
+            try:
+                df = pd.read_excel(io.BytesIO(contents), engine="openpyxl")
+            except Exception:
+                df = None
+    # Try reading as CSV if Excel loading fails or file extension suggests text/CSV
     if df is None:
         try:
-            df = pd.read_excel(io.BytesIO(contents))
+            # Use UTF-8 encoding by default; fallback to latin1 if decode error arises
+            df = pd.read_csv(io.BytesIO(contents), encoding="utf-8")
         except Exception:
-            df = None
-    # Try reading as CSV if Excel loading fails
-    if df is None:
-        try:
-            df = pd.read_csv(io.BytesIO(contents))
-        except Exception as e:
-            return templates.TemplateResponse("error.html", {"request": request, "message": f"Could not read the uploaded file: {e}"})
+            try:
+                df = pd.read_csv(io.BytesIO(contents), encoding="latin1")
+            except Exception as e:
+                return templates.TemplateResponse(
+                    "error.html",
+                    {
+                        "request": request,
+                        "message": f"Could not read the uploaded file: {e}",
+                    },
+                )
     # Reset index to ensure continuous integer index
     df = df.reset_index(drop=True)
     # Detect datetime column
