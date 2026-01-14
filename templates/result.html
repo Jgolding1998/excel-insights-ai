@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Analysis Results - Excel Insights AI</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" integrity="sha384-    b9IyrNzYjL3Q5Uggv8K5bIFVzVn1MnctdSmnxDfyBlKEDxS3mCWvG8WLa7rUIoHs" crossorigin="anonymous">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <nav class="navbar navbar-dark bg-primary mb-4">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="/">Excel Insights AI</a>
+        </div>
+    </nav>
+    <div class="container">
+        <h1 class="mb-3">Analysis Report</h1>
+        <div class="mb-4">
+            <h4>Narrative summary</h4>
+            <pre style="white-space: pre-wrap; background: #f8f9fa; padding: 10px; border-radius: 4px;">{{ narrative }}</pre>
+        </div>
+        <div class="mb-4">
+            <h4>Data quality insights</h4>
+            <ul>
+            {% for msg in quality_messages %}
+                <li>{{ msg }}</li>
+            {% endfor %}
+            </ul>
+        </div>
+        <div class="mb-4">
+            <h4>Summary statistics</h4>
+            <div class="table-responsive">
+                {{ descr_table | safe }}
+            </div>
+        </div>
+        <div class="mb-4">
+            <h4>Trend analysis</h4>
+            <ul>
+            {% for t in trends %}
+                <li><strong>{{ t.column }}</strong>: {{ t.comment }} (slope = {{ '%.3f' % t.slope }})</li>
+            {% endfor %}
+            </ul>
+        </div>
+        {% if forecasts %}
+        <div class="mb-4">
+            <h4>Forecasts</h4>
+            <ul>
+                {% for col, fc in forecasts.items() %}
+                <li><strong>{{ col }}</strong>: {{ fc }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+        {% endif %}
+        <div class="mb-4">
+            <h4>Interactive charts</h4>
+            {% for plot in plots %}
+                <div class="mb-3">
+                    {{ plot | safe }}
+                </div>
+            {% endfor %}
+        </div>
+        <a class="btn btn-secondary mt-3" href="/">Analyse another file</a>
+    </div>
+</body>
+</html>
