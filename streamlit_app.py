@@ -17,7 +17,10 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.express as px
-from statsmodels.tsa.arima.model import ARIMA
+# NOTE: We avoid importing heavy forecasting libraries such as statsmodels
+# because they require compiled dependencies that are not available in all
+# deployment environments (e.g. Streamlit Community Cloud). Instead we
+# implement a simple linear regression based forecasting routine below.
 
 
 def detect_datetime_column(df: pd.DataFrame) -> Optional[str]:
@@ -174,16 +177,18 @@ def compute_correlations(df: pd.DataFrame) -> Optional[Dict[str, Any]]:
 
 
 def forecast_next(df: pd.DataFrame, time_col: str, target_col: str, periods: int = 3) -> Optional[List[float]]:
-    """Forecast future values using a simple ARIMA(1,1,0) model."""
-    try:
+    """""Forecast future values using a simple linear regression trend."""ple linear regression trend."""
+  
+      try:
         series = df[[time_col, target_col]].dropna().sort_values(time_col)
         y = series[target_col].astype(float).values
-        if len(y) < 12:
+        n = len(y)
+        if n < 2:
             return None
-        model = ARIMA(y, order=(1, 1, 0))
-        fit = model.fit()
-        fc = fit.forecast(steps=periods)
-        return [float(v) for v in fc]
+        x = np.arange(n)
+        slope, intercept = np.polyfit(x, y, 1)
+        forecasts = intercept + slope * (n + np.arange(periods))
+        return [float(v) for v in forecasts]
     except Exception:
         return None
 
