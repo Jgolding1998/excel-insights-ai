@@ -460,10 +460,43 @@ async def index(request: Request):
 async def upload(request: Request, file: UploadFile):
     """Handle file uploads and return analysis results."""
     contents = await file.read()
-    # Read file into DataFrame; try Excel then CSV
+    # Read file into DataFrame; attempt Excel with intelligent sheet selection then fallback to CSV
+    df = None  # type: ignore[assignment]
+    # Try Excel formats first
     try:
-        df = pd.read_excel(io.BytesIO(contents))
+        # Use ExcelFile to inspect all sheets and choose the most informative one.
+        xls = pd.ExcelFile(io.BytesIO(contents))
+        best_sheet = None
+        best_score = -1
+        # Evaluate each sheet: prefer sheets with many numeric columns and rows.
+        for sheet_name in xls.sheet_names:
+            try:
+                tmp = xls.parse(sheet_name)
+            except Exception:
+                continue
+            # Score based on number of numeric columns and total rows
+            num_numeric = tmp.select_dtypes(include=[np.number]).shape[1]
+            n_rows = tmp.shape[0]
+            score = num_numeric * n_rows
+            # Skip sheets with no numeric columns
+            if num_numeric > 0 and score > best_score:
+                best_score = score
+                best_sheet = sheet_name
+        # Fall back to first sheet if none scored
+        if best_sheet is None:
+            best_sheet = xls.sheet_names[0] if xls.sheet_names else None
+        if best_sheet is not None:
+            df = xls.parse(best_sheet)
     except Exception:
+        df = None
+    # Fallback to generic Excel read if above fails
+    if df is None:
+        try:
+            df = pd.read_excel(io.BytesIO(contents))
+        except Exception:
+            df = None
+    # Try reading as CSV if Excel loading fails
+    if df is None:
         try:
             df = pd.read_csv(io.BytesIO(contents))
         except Exception as e:
