@@ -246,7 +246,7 @@ def build_narrative(q_msgs: List[str], trends: List[Dict[str, Any]], forecasts: 
     return "\n\n".join(parts)
 
 
-def parse_uploaded_file(uploaded_file: st.uploaded_file_manager.UploadedFile) -> Optional[pd.DataFrame]:
+def parse_uploaded_file(uploaded_file) -> Optional[pd.DataFrame]:
     """Read uploaded file into a DataFrame using Excel or CSV parsers."""
     if uploaded_file is None:
         return None
