@@ -198,9 +198,9 @@ def forecast_next(df: pd.DataFrame, time_col: str, target_col: str, periods: int
         return None
 
 
-def generate_category_charts(df: pd.DataFrame) -> List[px.Figure]:
+def generate_category_charts(df: pd.DataFrame) -> list:
     """Generate bar charts for categorical columns with low cardinality."""
-    charts: List[px.Figure] = []
+    charts: list = []
     numeric_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
     cat_cols = [c for c in df.columns if not pd.api.types.is_numeric_dtype(df[c])]
     chart_limit = 6
