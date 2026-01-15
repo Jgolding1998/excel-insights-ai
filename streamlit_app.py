@@ -373,6 +373,87 @@ def main() -> None:
             st.subheader("Category Summary Charts")
             for chart in cat_charts:
                 st.plotly_chart(chart, use_container_width=True)
+
+        # -------------------------------------------------------------
+        # Additional interactive analysis to make the app more functional
+        # -------------------------------------------------------------
+        st.subheader("Interactive Analysis")
+        # Allow users to select numeric and categorical columns for custom analyses
+        numeric_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+        categorical_cols = [c for c in df.columns if not pd.api.types.is_numeric_dtype(df[c])]
+        if numeric_cols:
+            st.markdown("**Select numeric columns for analysis**")
+            selected_numeric = st.multiselect(
+                "Numeric columns:",
+                options=numeric_cols,
+                default=numeric_cols,
+            )
+        else:
+            selected_numeric = []
+        if categorical_cols and numeric_cols:
+            st.markdown("**Aggregate a numeric column by a category**")
+            group_col = st.selectbox("Group by (categorical column)", categorical_cols)
+            agg_col = st.selectbox("Aggregate column (numeric)", numeric_cols)
+            if group_col and agg_col:
+                try:
+                    agg_df = df.groupby(group_col)[agg_col].sum().sort_values(ascending=False)
+                    st.write(f"Sum of **{agg_col}** by **{group_col}**")
+                    # Display bar chart
+                    bar_fig = px.bar(
+                        x=agg_df.index.astype(str),
+                        y=agg_df.values,
+                        labels={'x': group_col, 'y': f"Sum of {agg_col}"},
+                    )
+                    bar_fig.update_layout(height=400, margin=dict(l=30, r=30, t=50, b=30))
+                    st.plotly_chart(bar_fig, use_container_width=True)
+                    # Show the aggregated table
+                    st.dataframe(agg_df.reset_index().rename(columns={agg_col: f"Sum of {agg_col}"}))
+                except Exception:
+                    pass
+        # Scatter plots for correlated pairs (top correlated pairs)
+        if corr_info and corr_info.get('strong_pairs'):
+            st.markdown("**Scatter plot for highly correlated pairs**")
+            pairs = corr_info['strong_pairs']
+            pair_options = [f"{a} vs {b} (corr={val:.2f})" for a, b, val in pairs]
+            selected_pair_label = st.selectbox("Select correlated pair to plot", pair_options)
+            if selected_pair_label:
+                idx = pair_options.index(selected_pair_label)
+                a, b, val = pairs[idx]
+                try:
+                    scatter_fig = px.scatter(
+                        df,
+                        x=a,
+                        y=b,
+                        labels={'x': a, 'y': b},
+                        title=f"{a} vs {b} (corr={val:.2f})",
+                    )
+                    scatter_fig.update_layout(height=400, margin=dict(l=30, r=30, t=50, b=30))
+                    st.plotly_chart(scatter_fig, use_container_width=True)
+                except Exception:
+                    pass
+        # Download buttons for raw data and summary statistics
+        st.markdown("**Download Data**")
+        try:
+            csv_data = df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                "Download raw data as CSV",
+                data=csv_data,
+                file_name="data.csv",
+                mime="text/csv",
+            )
+        except Exception:
+            pass
+        try:
+            summary_csv = descr.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                "Download summary statistics as CSV",
+                data=summary_csv,
+                file_name="summary_statistics.csv",
+                mime="text/csv",
+            )
+        except Exception:
+            pass
+
         # Narrative summary
         narrative = build_narrative(q_msgs, trends, fc_results, corr_msgs)
         st.subheader("Narrative Summary")
