@@ -17,9 +17,10 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.express as px
+
 # NOTE: We avoid importing heavy forecasting libraries such as statsmodels
 # because they require compiled dependencies that are not available in all
-# deployment environments (e.g. Streamlit Community Cloud). Instead we
+# deployment environments (e.g. Streamlit Community Cloud).  Instead we
 # implement a simple linear regression based forecasting routine below.
 
 
@@ -177,36 +178,22 @@ def compute_correlations(df: pd.DataFrame) -> Optional[Dict[str, Any]]:
 
 
 def forecast_next(df: pd.DataFrame, time_col: str, target_col: str, periods: int = 3) -> Optional[List[float]]:
-    """
-    Produce a simple linear trend forecast for the target column.
-
-    This function fits a first-degree polynomial (line) to the observed values
-    against their occurrence order and extrapolates into the future for the
-    requested number of periods. It provides a lightweight alternative to
-    ARIMA models that does not require compiling any external libraries.
-
-    Args:
-        df: The full DataFrame containing the data.
-        time_col: Name of the column representing time or ordering. It is
-            ignored for forecasting; ordering is determined by the row
-            sequence after sorting by this column.
-        target_col: Name of the numeric column to forecast.
-        periods: Number of future periods to forecast.
-
-    Returns:
-        List of forecasted values, or ``None`` if not enough data.
-    """
-      
-      try:
+    """Forecast future values for ``target_col`` based on a simple linear trend."""
+    try:
+        # Drop rows with missing values in the relevant columns and sort by time
         series = df[[time_col, target_col]].dropna().sort_values(time_col)
         y = series[target_col].astype(float).values
         n = len(y)
-        if n < 2:
+        # Require at least 3 points to build a reasonable trend line
+        if n < 3:
             return None
         x = np.arange(n)
-        slope, intercept = np.polyfit(x, y, 1)
-        forecasts = intercept + slope * (n + np.arange(periods))
-        return [float(v) for v in forecasts]
+        # Fit linear regression y = m*x + b
+        m, b = np.polyfit(x, y, 1)
+        # Forecast future values
+        x_future = np.arange(n, n + periods)
+        forecast = m * x_future + b
+        return [float(v) for v in forecast]
     except Exception:
         return None
 
